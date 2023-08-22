@@ -1,7 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
 #[ink::contract]
-mod psp22 {
+mod red {
     use ink::storage::Mapping;
     use ink_prelude::string::String;
 
@@ -41,41 +41,113 @@ mod psp22 {
         data: Vec<u8>,
     }
 
+    #[ink::trait_definition]
+    pub trait PSP22 {
+        #[ink(message)]
+        fn total_supply(&self) -> Balance;
+
+        #[ink(message)]
+        fn balance_of(&self, owner: AccountId) -> Balance;
+
+        #[ink(message)]
+        fn allowance(&self, owner: AccountId, spender: AccountId) -> Balance;
+
+        #[ink(message)]
+        fn transfer(
+            &mut self,
+            to: AccountId,
+            value: Balance,
+            data: Vec<u8>,
+        ) -> Result<(), PSP22Error>;
+
+        //https://github.com/Brushfam/openbrush-contracts/blob/main/lang/codegen/src/implementations.rs
+        #[ink(message)]
+        fn transfer_from(
+            &mut self,
+            from: AccountId,
+            to: AccountId,
+            value: Balance,
+            data: Vec<u8>,
+        ) -> Result<(), PSP22Error>;
+
+        #[ink(message)]
+        fn approve(&mut self, spender: AccountId, value: Balance) -> Result<(), PSP22Error>;
+
+        #[ink(message)]
+        fn increase_allowance(
+            &mut self,
+            spender: AccountId,
+            delta_value: Balance,
+        ) -> Result<(), PSP22Error>;
+
+        #[ink(message)]
+        fn decrease_allowance(
+            &mut self,
+            spender: AccountId,
+            delta_value: Balance,
+        ) -> Result<(), PSP22Error>;
+    }
+
+    #[ink::trait_definition]
+    pub trait PSP22Metadata {
+        #[ink(message)]
+        fn token_name(&self) -> Option<String>;
+
+        #[ink(message)]
+        fn token_symbol(&self) -> Option<String>;
+
+        #[ink(message)]
+        fn token_decimals(&self) -> u8;
+    }
+
     #[ink(storage)]
-    pub struct Psp22 {
+    pub struct RedToken {
         /// The super user is the holder of all the tokens
-        pub super_user: AccountId,
+        pub admin: AccountId,
         /// Total token supply
         pub total_supply: Balance,
         pub balances: Mapping<AccountId, Balance>,
         pub allowances: Mapping<(AccountId, AccountId), Balance>,
+        pub token_name: String,
+        pub token_symbol: String,
+        pub token_decimals: u8,
     }
 
-    impl Psp22 {
+    impl RedToken {
         /// Initializes the token supply
         #[ink(constructor)]
-        pub fn new(init_supply: Balance, super_user: AccountId) -> Self {
-            Self { total_supply: init_supply, super_user: super_user, balances: Default::default(), allowances: Default::default() }
+        pub fn new(init_supply: Balance, admin: AccountId, token_decimals: u8) -> Self {
+            Self {
+                total_supply: init_supply,
+                admin,
+                balances: Default::default(),
+                allowances: Default::default(),
+                token_name: "Real Estate DAO".to_string(),
+                token_symbol: "RED".to_string(),
+                token_decimals,
+            }
         }
+    }
 
+    impl PSP22 for RedToken {
         /// Returns the total token supply
         #[ink(message)]
-        pub fn total_supply(&self) -> Balance {
+        fn total_supply(&self) -> Balance {
             self.total_supply
         }
 
         /// Returns the account balance for the specified `owner`
         /// Returns `0` if the account is non-existent
         #[ink(message)]
-        pub fn balance_of(&self, owner: AccountId) -> Balance {
+        fn balance_of(&self, owner: AccountId) -> Balance {
             self.balances.get(owner).unwrap_or(0)
         }
 
         //  "Returns the amount which `spender` is still allowed to withdraw from `owner`.",
         //  "Returns `0` if no allowance has been set."
         #[ink(message)]
-        pub fn allowance(&self, owner: AccountId, spender: AccountId) -> Balance {
-            self.allowances.get(&(owner, spender)).unwrap_or(0)
+        fn allowance(&self, owner: AccountId, spender: AccountId) -> Balance {
+            self.allowances.get((owner, spender)).unwrap_or(0)
         }
 
         ///  "Transfers `value` amount of tokens from the caller's account to account `to`",
@@ -94,24 +166,32 @@ mod psp22 {
         ///  "Reverts with error `SafeTransferCheckFailed` if the recipient is a contract and
         ///  rejected the transfer."
         #[ink(message)]
-        pub fn transfer(&mut self, to: AccountId, value: Balance, data: Vec<u8>) -> Result<(), PSP22Error> {
+        fn transfer(
+            &mut self,
+            to: AccountId,
+            value: Balance,
+            data: Vec<u8>,
+        ) -> Result<(), PSP22Error> {
             let sender = self.env().caller();
             let sender_balance = self.balance_of(sender);
 
             if sender_balance <= value {
-                return Err(PSP22Error::InsufficientBalance)
+                return Err(PSP22Error::InsufficientBalance);
             }
 
             if sender == AccountId::from([0u8; 32]) {
-                return Err(PSP22Error::ZeroSenderAddress)
+                return Err(PSP22Error::ZeroSenderAddress);
             }
 
             if to == AccountId::from([0u8; 32]) {
-                return Err(PSP22Error::ZeroRecipientAddress)
+                return Err(PSP22Error::ZeroRecipientAddress);
             }
 
             if self.env().is_contract(&to) {
-                return Err(PSP22Error::SafeTransferCheckFailed(format!("AccountId {:?} is contract", &to)))
+                return Err(PSP22Error::SafeTransferCheckFailed(format!(
+                    "AccountId {:?} is contract",
+                    &to
+                )));
             }
 
             let recipient_balance = self.balance_of(to);
@@ -119,14 +199,12 @@ mod psp22 {
             self.balances.insert(sender, &(sender_balance - value));
             self.balances.insert(to, &(recipient_balance + value));
 
-            self.env().emit_event(
-                Transfer {
-                    from: None,
-                    to: Some(to),
-                    value,
-                    data,
-                }
-            );
+            self.env().emit_event(Transfer {
+                from: None,
+                to: Some(to),
+                value,
+                data,
+            });
 
             Ok(())
         }
@@ -151,26 +229,32 @@ mod psp22 {
         /// "",
         /// "Reverts with error `ZeroRecipientAddress` if recipient's address is zero."
         #[ink(message)]
-        pub fn transfer_from(&mut self, from: AccountId, to: AccountId, value: Balance, data: Vec<u8>) -> Result<(), PSP22Error> {
+        fn transfer_from(
+            &mut self,
+            from: AccountId,
+            to: AccountId,
+            value: Balance,
+            data: Vec<u8>,
+        ) -> Result<(), PSP22Error> {
             let caller = self.env().caller();
             let allowance = self.allowance(from, caller);
 
             if allowance < value {
-                return Err(PSP22Error::InsufficientBalance)
+                return Err(PSP22Error::InsufficientBalance);
             }
 
             let from_balance = self.balance_of(from);
 
             if from_balance < value {
-                return Err(PSP22Error::InsufficientBalance)
+                return Err(PSP22Error::InsufficientBalance);
             }
 
             if from == AccountId::from([0u8; 32]) {
-                return Err(PSP22Error::ZeroSenderAddress)
+                return Err(PSP22Error::ZeroSenderAddress);
             }
 
             if to == AccountId::from([0u8; 32]) {
-                return Err(PSP22Error::ZeroRecipientAddress)
+                return Err(PSP22Error::ZeroRecipientAddress);
             }
 
             let to_balance = self.balance_of(to);
@@ -188,7 +272,7 @@ mod psp22 {
                 owner: from,
                 spender: caller,
                 value,
-                data: data,
+                data,
             });
 
             Ok(())
@@ -207,15 +291,15 @@ mod psp22 {
         ///    "",
         ///    "Reverts with error `ZeroRecipientAddress` if recipient's address is zero."
         #[ink(message)]
-        pub fn approve(&mut self, spender: AccountId, value: Balance) -> Result<(), PSP22Error> {
+        fn approve(&mut self, spender: AccountId, value: Balance) -> Result<(), PSP22Error> {
             let caller = self.env().caller();
 
             if caller == AccountId::from([0u8; 32]) {
-                return Err(PSP22Error::ZeroSenderAddress)
+                return Err(PSP22Error::ZeroSenderAddress);
             }
 
             if spender == AccountId::from([0u8; 32]) {
-                return Err(PSP22Error::ZeroRecipientAddress)
+                return Err(PSP22Error::ZeroRecipientAddress);
             }
 
             self.allowances.insert((caller, spender), &value);
@@ -240,19 +324,24 @@ mod psp22 {
         //     "",
         //     "Reverts with error `ZeroRecipientAddress` if recipient's address is zero."
         #[ink(message)]
-        pub fn increase_allowance(&mut self, spender: AccountId, delta_value: Balance) -> Result<(), PSP22Error> {
+        fn increase_allowance(
+            &mut self,
+            spender: AccountId,
+            delta_value: Balance,
+        ) -> Result<(), PSP22Error> {
             let caller = self.env().caller();
 
             if caller == AccountId::from([0u8; 32]) {
-                return Err(PSP22Error::ZeroSenderAddress)
+                return Err(PSP22Error::ZeroSenderAddress);
             }
 
             if spender == AccountId::from([0u8; 32]) {
-                return Err(PSP22Error::ZeroRecipientAddress)
+                return Err(PSP22Error::ZeroRecipientAddress);
             }
 
             let current_allowence = self.allowance(caller, spender);
-            self.allowances.insert((caller, spender), &(current_allowence + delta_value));
+            self.allowances
+                .insert((caller, spender), &(current_allowence + delta_value));
 
             self.env().emit_event(Approval {
                 owner: caller,
@@ -263,7 +352,6 @@ mod psp22 {
 
             Ok(())
         }
-
 
         ///    "Atomically decreases the allowance granted to `spender` by the caller.",
         //     "",
@@ -278,24 +366,29 @@ mod psp22 {
         //     "",
         //     "Reverts with error `ZeroRecipientAddress` if recipient's address is zero."
         #[ink(message)]
-        pub fn decrease_allowance(&mut self, spender: AccountId, delta_value: Balance) -> Result<(), PSP22Error> {
+        fn decrease_allowance(
+            &mut self,
+            spender: AccountId,
+            delta_value: Balance,
+        ) -> Result<(), PSP22Error> {
             let caller = self.env().caller();
 
             let current_allowence = self.allowance(caller, spender);
 
             if current_allowence < delta_value {
-                return Err(PSP22Error::InsufficientAllowance)
+                return Err(PSP22Error::InsufficientAllowance);
             }
 
             if caller == AccountId::from([0u8; 32]) {
-                return Err(PSP22Error::ZeroSenderAddress)
+                return Err(PSP22Error::ZeroSenderAddress);
             }
 
             if spender == AccountId::from([0u8; 32]) {
-                return Err(PSP22Error::ZeroRecipientAddress)
+                return Err(PSP22Error::ZeroRecipientAddress);
             }
 
-            self.allowances.insert((caller, spender), &(current_allowence - delta_value));
+            self.allowances
+                .insert((caller, spender), &(current_allowence - delta_value));
 
             self.env().emit_event(Approval {
                 owner: caller,
@@ -305,6 +398,42 @@ mod psp22 {
             });
 
             Ok(())
+        }
+    }
+
+    impl PSP22Metadata for RedToken {
+        /// Returns the token name.
+        #[ink(message)]
+        fn token_name(&self) -> Option<String> {
+            Some(self.token_name.clone())
+        }
+
+        /// Returns the token symbol.
+        #[ink(message)]
+        fn token_symbol(&self) -> Option<String> {
+            Some(self.token_symbol.clone())
+        }
+
+        /// Returns the token decimals.
+        #[ink(message)]
+        fn token_decimals(&self) -> u8 {
+            self.token_decimals
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use ink::primitives::AccountId;
+
+        use super::*;
+
+        #[test]
+        fn test_init() {
+            let contract = RedToken::new(100_000, AccountId::from([0x01; 32]), 5u8);
+            assert_eq!(
+                contract.token_name().unwrap(),
+                "Real Estate DAO".to_string()
+            );
         }
     }
 }
